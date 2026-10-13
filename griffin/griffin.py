@@ -97,39 +97,13 @@ class Real_Gated_Linear_Recurrent_Unit(nn.Module):
         with torch.no_grad():
             self.Lambda.copy_(-torch.log(self.Lambda ** (-1. / self.c) - 1.))
 
-    def foresee(self, x:Float32[Tensor, "batch_size sequence_length dim"]
-                ) -> Float32[Tensor, "batch_size sequence_length dim"]:
-
-        batch_size, sequence_length = x.shape[:2]
-        ht = x.new_zeros(batch_size, self.D)  # (batch_size, D)
-        y = torch.empty_like(x)  # (batch_size, sequence_length, D)
-        for t in range(sequence_length):
-            xt = x[:, t, :]
-            rt = torch.sigmoid(F.linear(xt, self.Wa, self.ba))  # (1)
-            it = torch.sigmoid(F.linear(xt, self.Wx, self.bx))  # (2)
-
-            # TODO (3)
-            # a = torch.sigmoid(self.Lambda)
-            # at = torch.pow(a, self.c*rt)
-
-            # TODO Appendix A - https://github.com/kyegomez/Griffin/issues/6
-            log_at = - self.c * F.softplus(-self.Lambda, beta=1, threshold=20) * rt # (6)
-            at = torch.exp(log_at)
-
-            ht = at * ht + torch.sqrt(1 - at**2) * (it * xt) # (4)
-
-            y[:, t, :] = ht
-
-        return y
-
     def forward(self, x:Float32[Tensor, "batch_size sequence_length dim"]
                 ) -> Float32[Tensor, "batch_size sequence_length dim"]:
 
-        batch_size, sequence_length = x.shape[:2]
+        batch_size = x.shape[0]
         ht = x.new_zeros(batch_size, self.D)  # (batch_size, D)
         y = []
-        for t in range(sequence_length):
-            xt = x[:, t, :]
+        for xt in x.unbind(1):  # xt: (batch_size, D)
             rt = torch.sigmoid(F.linear(xt, self.Wa, self.ba))  # (1)
             it = torch.sigmoid(F.linear(xt, self.Wx, self.bx))  # (2)
 
@@ -143,9 +117,9 @@ class Real_Gated_Linear_Recurrent_Unit(nn.Module):
 
             ht = at * ht + torch.sqrt(1 - at**2) * (it * xt) # (4)
 
-            y.append(ht.unsqueeze(1))
+            y.append(ht)
 
-        y = torch.cat(y, dim=1)
+        y = torch.stack(y, dim=1)  # (batch_size, sequence_length, D)
 
         return y
 
