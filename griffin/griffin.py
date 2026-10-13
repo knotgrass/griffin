@@ -100,23 +100,26 @@ class Real_Gated_Linear_Recurrent_Unit(nn.Module):
     def forward(self, x:Float32[Tensor, "batch_size sequence_length dim"]
                 ) -> Float32[Tensor, "batch_size sequence_length dim"]:
 
-        batch_size = x.shape[0]
-        ht = x.new_zeros(batch_size, self.D)  # (batch_size, D)
+        # Paper, Section 2.4: "The layer has gates on both the input x and the
+        # recurrent weight a. However, neither gate depends on the recurrent
+        # state h_{t-1}, which ensures that the computation can be executed
+        # efficiently on device."
+        # So (1), (2) and (6) run on all t at once. Only (4) needs the loop.
+        r = torch.sigmoid(F.linear(x, self.Wa, self.ba))  # (1), (batch_size, sequence_length, D)
+        i = torch.sigmoid(F.linear(x, self.Wx, self.bx))  # (2)
+
+        # TODO (3)
+        # a = torch.sigmoid(self.Lambda) ** (self.c * r)
+
+        # TODO Appendix A - https://github.com/kyegomez/Griffin/issues/6
+        log_a = - self.c * F.softplus(-self.Lambda, beta=1, threshold=20) * r  # (6)
+        a = torch.exp(log_a)
+        b = torch.sqrt(1 - a**2) * (i * x)  # the input term of (4)
+
+        ht = x.new_zeros(x.shape[0], self.D)  # (batch_size, D)
         y = []
-        for xt in x.unbind(1):  # xt: (batch_size, D)
-            rt = torch.sigmoid(F.linear(xt, self.Wa, self.ba))  # (1)
-            it = torch.sigmoid(F.linear(xt, self.Wx, self.bx))  # (2)
-
-            # TODO (3)
-            # a = torch.sigmoid(self.Lambda)
-            # at = torch.pow(a, self.c*rt)
-
-            # TODO Appendix A - https://github.com/kyegomez/Griffin/issues/6
-            log_at = - self.c * F.softplus(-self.Lambda, beta=1, threshold=20) * rt # (6)
-            at = torch.exp(log_at)
-
-            ht = at * ht + torch.sqrt(1 - at**2) * (it * xt) # (4)
-
+        for at, bt in zip(a.unbind(1), b.unbind(1)):  # at, bt: (batch_size, D)
+            ht = at * ht + bt  # (4)
             y.append(ht)
 
         y = torch.stack(y, dim=1)  # (batch_size, sequence_length, D)
