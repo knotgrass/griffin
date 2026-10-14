@@ -1,6 +1,12 @@
 import torch
 
-from griffin.griffin import Recurrent_block, Residual_block, Temporal_Conv1D
+from griffin.griffin import (
+    RGLRU,
+    Recurrent_block,
+    Residual_block,
+    SqrtBoundDerivative,
+    Temporal_Conv1D,
+)
 
 
 def test_causal():
@@ -56,7 +62,45 @@ def test_residual_block():
 
     # C9: h_0 follows the dtype and the device of x
     blk_bf16 = Residual_block(D).to(torch.bfloat16)
-    assert blk_bf16(x.detach().to(torch.bfloat16)).dtype == torch.bfloat16
+    y_bf16 = blk_bf16(x.detach().to(torch.bfloat16))
+    assert y_bf16.dtype == torch.bfloat16
+    # N1, N2: no inf or NaN gradients in bfloat16
+    y_bf16.float().sum().backward()
+    assert all(torch.isfinite(p.grad).all() for p in blk_bf16.parameters())
     # the meta device holds no data, so it checks the device without a GPU
     blk_meta = Residual_block(D).to("meta")
     assert blk_meta(x.detach().to("meta")).device.type == "meta"
+
+
+def test_input_term():
+    """N2, N1: with numerically_stable=True, input_term keeps its digits near a_t = 1 and its gradient finite at 1 - a_t^2 = 0."""
+    stable, plain = RGLRU(1), RGLRU(1, numerically_stable=False)
+    log_a = -torch.logspace(-8, 0, 9, dtype=torch.float64)  # -1e-8 ... -1
+    a, one = torch.exp(log_a), torch.ones_like(log_a)  # i = x = 1, so the term is sqrt(1 - a**2)
+
+    # float64: both formulas give the same value, up to the rounding of 1 - a**2 (about 1e-16)
+    ref = stable.input_term(log_a, a, one, one)
+    torch.testing.assert_close(plain.input_term(log_a, a, one, one), ref, rtol=1e-7, atol=0)
+
+    # float32: as written in (4) the term is exactly 0 at log_a = -1e-8; the stable form stays within 1e-6
+    f32 = [t.float() for t in (log_a, a, one, one)]
+    assert plain.input_term(*f32)[0] == 0
+    rel = ((stable.input_term(*f32).double() - ref) / ref).abs()
+    assert rel.max() < 1e-6
+
+    # N1: the derivative of the sqrt is bounded at 1000, the plain sqrt gives inf at 0
+    v = torch.tensor([0.0, 1e-8, 1.0], requires_grad=True)
+    SqrtBoundDerivative.apply(v).sum().backward()
+    torch.testing.assert_close(v.grad, torch.tensor([1000.0, 1000.0, 0.5]))
+    # r_t = 0 exactly gives log_a = 0 and 1 - a**2 = 0: the gradient stays finite only with the flag
+    for m, finite in ((stable, True), (plain, False)):
+        la0 = torch.zeros(3, requires_grad=True)
+        m.input_term(la0, torch.exp(la0), one[:3], one[:3]).sum().backward()
+        assert torch.isfinite(la0.grad).all() == finite
+
+    # both settings of the flag give the same RG-LRU output for ordinary inputs
+    torch.manual_seed(0)
+    stable, plain = RGLRU(8), RGLRU(8, numerically_stable=False)
+    plain.load_state_dict(stable.state_dict())
+    x = torch.randn(2, 5, 8)
+    torch.testing.assert_close(stable(x), plain(x), rtol=1e-5, atol=1e-6)
