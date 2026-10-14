@@ -1,47 +1,34 @@
-# https://github.com/bzhangGo/rmsnorm/blob/2e726f1a3f106bb719056422f4f9b6aca03d3ce6/rmsnorm_torch.py
+# https://github.com/google-deepmind/recurrentgemma/blob/2efa84dac0e68e63547a27a18fa943c98f1c312e/recurrentgemma/torch/layers.py#L30-L73
+# float32 computation as in Gemma: https://github.com/google/gemma_pytorch/blob/014acb7ac4563a5f77c76d7ff98f31b568c16508/gemma/model.py#L166-L190
 import torch
-import torch.nn as nn
+from torch import Tensor, nn
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, d, p=-1., eps=1e-8, bias=False):
-        """
-            Root Mean Square Layer Normalization
-        :param d: model size
-        :param p: partial RMSNorm, valid value [0, 1], default -1.0 (disabled)
-        :param eps:  epsilon value, default 1e-8
-        :param bias: whether use bias term for RMSNorm, disabled by
-            default because RMSNorm doesn't enforce re-centering invariance.
-        """
-        super(RMSNorm, self).__init__()
+    """RMS Norm, as in the official code: y = x / sqrt(mean(x^2) + eps) * (1 + scale)."""
 
+    def __init__(self, width: int, eps: float = 1e-6, device=None, dtype=None):
+        super().__init__()
+        self.width = width
         self.eps = eps
-        self.d = d
-        self.p = p
-        self.bias = bias
 
-        self.scale = nn.Parameter(torch.ones(d))
-        self.register_parameter("scale", self.scale)
+        # Parameters.
+        self.scale = nn.Parameter(torch.empty([self.width], device=device, dtype=dtype))
 
-        if self.bias:
-            self.offset = nn.Parameter(torch.zeros(d))
-            self.register_parameter("offset", self.offset)
+        # Initialization
+        self.reset_parameters()
 
-    def forward(self, x):
-        if self.p < 0. or self.p > 1.:
-            norm_x = x.norm(2, dim=-1, keepdim=True)
-            d_x = self.d
-        else:
-            partial_size = int(self.d * self.p)
-            partial_x, _ = torch.split(x, [partial_size, self.d - partial_size], dim=-1)
+    def reset_parameters(self) -> None:
+        torch.nn.init.zeros_(self.scale)
 
-            norm_x = partial_x.norm(2, dim=-1, keepdim=True)
-            d_x = partial_size
+    def forward(self, x: Tensor) -> Tensor:
+        # Compute in float32 (float64 stays float64) and cast back, as gemma_pytorch does with x.float():
+        # the backward pass needs (var + eps)^(-3/2), which is 1e9 for a zero vector and overflows float16.
+        dtype = torch.promote_types(x.dtype, torch.float32)
+        x_hi = x.to(dtype)
+        var = torch.mean(torch.square(x_hi), axis=-1, keepdims=True)
+        normed_x = x_hi * torch.rsqrt(var + self.eps)
 
-        rms_x = norm_x * d_x ** (-1. / 2)
-        x_normed = x / (rms_x + self.eps)
+        scale = torch.reshape(self.scale, [1 for _ in range(x.ndim - 1)] + [-1])
 
-        if self.bias:
-            return self.scale * x_normed + self.offset
-
-        return self.scale * x_normed
+        return (normed_x * (scale.to(dtype) + 1)).to(x.dtype)

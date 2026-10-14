@@ -7,6 +7,7 @@ from griffin.griffin import (
     SqrtBoundDerivative,
     Temporal_Conv1D,
 )
+from griffin.rmsnorm import RMSNorm
 
 
 def test_causal():
@@ -104,3 +105,21 @@ def test_input_term():
     plain.load_state_dict(stable.state_dict())
     x = torch.randn(2, 5, 8)
     torch.testing.assert_close(stable(x), plain(x), rtol=1e-5, atol=1e-6)
+
+
+def test_rmsnorm():
+    """N3: RMSNorm follows the official code: eps = 1e-6 inside the sqrt, gain 1 + scale with scale = 0."""
+    torch.manual_seed(0)
+    D = 6
+    norm = RMSNorm(D)
+    assert norm.eps == 1e-6 and (norm.scale == 0).all()
+    x = torch.randn(2, 10, D, dtype=torch.float64)
+    ref = x / torch.sqrt((x**2).mean(-1, keepdim=True) + 1e-6)
+    torch.testing.assert_close(norm.double()(x), ref)
+
+    # float16, zero vector (a padding token): the old eps = 1e-8 rounded to 0 and gave 0 / 0 = NaN
+    x16 = torch.zeros(2, 3, D, dtype=torch.float16, requires_grad=True)
+    y16 = RMSNorm(D).half()(x16)
+    assert y16.dtype == torch.float16 and (y16 == 0).all()
+    y16.float().sum().backward()
+    assert torch.isfinite(x16.grad).all()

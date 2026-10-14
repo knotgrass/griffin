@@ -230,9 +230,9 @@ class Recurrent_block(nn.Module):
 class Residual_block(nn.Module):
     def __init__(self, D:int):
         super().__init__()
-        self.tmb_norm = RMSNorm(d=D)
+        self.tmb_norm = RMSNorm(D)
         self.tmb = Recurrent_block(D, D_rnn=int(round(4 * D / 3)))
-        self.mlp_norm = RMSNorm(d=D)
+        self.mlp_norm = RMSNorm(D)
         self.mlp = Gated_MLP_block(D, expansion_factor=3)
 
     def forward(self, x:Tensor) -> Tensor:
