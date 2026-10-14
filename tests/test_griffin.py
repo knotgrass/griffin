@@ -1,13 +1,13 @@
 import torch
 
-from griffin.griffin import (
+from griffin import (
     RGLRU,
     Recurrent_block,
     Residual_block,
+    RMSNorm,
     SqrtBoundDerivative,
     Temporal_Conv1D,
 )
-from griffin.rmsnorm import RMSNorm
 
 
 def test_causal():
