@@ -3,7 +3,9 @@ import torch
 
 from griffin import (
     RGLRU,
+    TABLE_2,
     Griffin,
+    GriffinConfig,
     Local_MQA_block,
     Recurrent_block,
     Residual_block,
@@ -186,9 +188,13 @@ def test_griffin_model():
     """Griffin: embedding -> N residual blocks (recurrent, recurrent, attention, ...) -> RMSNorm -> shared linear -> softmax."""
     torch.manual_seed(0)
     B, T, V, D, N = 2, 7, 50, 256, 4
-    model = Griffin(V, D, N)
+    config = GriffinConfig(V=V, D=D, N=N, D_rnn=300, M=2, H=2, window_size=3)  # every column of Table 2
+    model = Griffin(config)
     assert [type(b.temporal_block).__name__ for b in model.blocks] == [
         "Recurrent_block", "Recurrent_block", "Local_MQA_block", "Recurrent_block"]
+    assert model.blocks[0].temporal_block.D_rnn == 300 and model.blocks[0].mlp.M == 2
+    mqa = model.blocks[2].temporal_block
+    assert (mqa.H, mqa.D_head, mqa.window_size) == (2, 128, 3)
     tokens = torch.randint(0, V, (B, T))
     logits = model(tokens)
     assert logits.shape == (B, T, V)
@@ -208,3 +214,16 @@ def test_griffin_model():
     loss = torch.nn.functional.cross_entropy(logits[:, :-1].reshape(-1, V), tokens[:, 1:].reshape(-1))
     loss.backward()
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+
+
+def test_griffin_config():
+    """GriffinConfig holds Table 2; from_table2 fills a row, and D_head = D / H = 128 in every row."""
+    cfg = GriffinConfig.from_table2("7B", V=32_000)
+    assert (cfg.V, cfg.D, cfg.D_rnn, cfg.N, cfg.M, cfg.H, cfg.window_size) == (32_000, 4096, 5632, 32, 3, 32, 1024)
+    assert all(row["D"] // row["H"] == 128 and row["D"] % row["H"] == 0 for row in TABLE_2.values())
+    assert [TABLE_2[s]["N"] for s in TABLE_2] == [12, 12, 12, 24, 24, 32, 40]
+    # the defaults follow the rules of the paper: D_rnn = 4D/3, M = 3, D_head = 128, window 1024
+    blk = Residual_block(256)
+    assert (blk.temporal_block.D_rnn, blk.mlp.M) == (round(4 * 256 / 3), 3)
+    blk = Residual_block(256, temporal_block_type="attention")
+    assert (blk.temporal_block.D_head, blk.temporal_block.window_size) == (128, 1024)

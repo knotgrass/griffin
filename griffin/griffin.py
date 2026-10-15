@@ -231,19 +231,27 @@ class Recurrent_block(nn.Module):
 
 
 class Residual_block(nn.Module):
-    def __init__(self, D:int, temporal_block_type:Literal['recurrent', 'attention']='recurrent'):
+    def __init__(self, D:int, temporal_block_type:Literal['recurrent', 'attention']='recurrent',
+                 D_rnn:int | None = None, M:int = 3, H:int | None = None, window_size:int = 1024):
         super().__init__()
         self.temporal_norm = RMSNorm(D)
         # Paper, Section 2.3: the temporal-mixing block is the recurrent block or local MQA.
         # Griffin stacks two residual blocks with 'recurrent', then one with 'attention' (Section 3).
+        # D_rnn, M (MLP expansion), H (attention heads) and window_size are the columns of Table 2,
+        # see GriffinConfig; the defaults are the rules of the paper: D_rnn = 4D/3, M = 3, D_head = 128.
         if temporal_block_type == 'recurrent':
-            self.temporal_block = Recurrent_block(D, D_rnn=int(round(4 * D / 3)))
+            self.temporal_block = Recurrent_block(D, D_rnn=D_rnn)
         elif temporal_block_type == 'attention':
-            self.temporal_block = Local_MQA_block(D)  # D_head = 128 and window 1024, as in the paper
+            if H is None:
+                D_head = 128
+            else:
+                assert D % H == 0, "D must be a multiple of the number of heads H"
+                D_head = D // H
+            self.temporal_block = Local_MQA_block(D, D_head=D_head, window_size=window_size)
         else:
             raise ValueError(f"temporal_block_type must be 'recurrent' or 'attention', got {temporal_block_type!r}")
         self.mlp_norm = RMSNorm(D)
-        self.mlp = Gated_MLP_block(D, expansion_factor=3)
+        self.mlp = Gated_MLP_block(D, expansion_factor=M)
 
     def forward(self, x:Tensor) -> Tensor:
         x1 = self.temporal_norm(x)

@@ -10,13 +10,15 @@ import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 
+from .config import GriffinConfig
 from .griffin import Residual_block
 from .rmsnorm import RMSNorm
 
 
 class Griffin(nn.Module):
     """Paper, Section 2: embedding -> N residual blocks -> RMSNorm -> linear layer whose weights are
-    shared with the embedding -> softmax over the V tokens.
+    shared with the embedding -> softmax over the V tokens. All sizes come from a GriffinConfig,
+    e.g. Griffin(GriffinConfig.from_table2("7B", V=32_000)).
 
     Section 3: the residual blocks follow the pattern recurrent, recurrent, attention (local MQA).
     Table 2: depth N = 12 (100M to 400M), 24 (1.3B, 3B), 32 (7B), 40 (14B). The official presets
@@ -25,19 +27,19 @@ class Griffin(nn.Module):
     uses both; the paper presets of the official code have both off.
     """
 
-    def __init__(self, V: int, D: int, N: int):
+    def __init__(self, cfg: GriffinConfig):
         super().__init__()
-        self.V = V  # vocabulary size: number of distinct tokens, also the width of the output layer
-        self.D = D  # model width: size of a token embedding and of the residual stream, Table 2
-        self.N = N  # depth: number of residual blocks, Table 2 (12, 24, 32 or 40)
-        self.embedding = nn.Embedding(V, D)  # its weight is also the output layer, see forward
+        self.cfg = cfg  # V, D, N and the other columns of Table 2, see config.py
+        self.embedding = nn.Embedding(cfg.V, cfg.D)  # its weight is also the output layer, see forward
         # official Embedder: std = 1 / sqrt(D), so the shared output layer gives logits of order 1
-        nn.init.normal_(self.embedding.weight, mean=0.0, std=1.0 / D ** 0.5)
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=1.0 / cfg.D ** 0.5)
         pattern = itertools.cycle(['recurrent', 'recurrent', 'attention'])  # as the official presets
-        self.blocks = nn.ModuleList(
-            [Residual_block(D, temporal_block_type=t) for t in itertools.islice(pattern, N)]
-        )
-        self.final_norm = RMSNorm(D)
+        self.blocks = nn.ModuleList([
+            Residual_block(cfg.D, temporal_block_type=t, D_rnn=cfg.D_rnn, M=cfg.M, H=cfg.H,
+                           window_size=cfg.window_size)
+            for t in itertools.islice(pattern, cfg.N)
+        ])
+        self.final_norm = RMSNorm(cfg.D)
 
     def forward(self, tokens: Int[Tensor, "B T"]) -> Float[Tensor, "B T V"]:
         x: Float[Tensor, "B T D"] = self.embedding(tokens)
