@@ -3,6 +3,7 @@ import torch
 
 from griffin import (
     RGLRU,
+    Griffin,
     Local_MQA_block,
     Recurrent_block,
     Residual_block,
@@ -179,3 +180,31 @@ def test_residual_block_attention():
     assert all(torch.isfinite(p.grad).all() for p in blk.parameters())
     with pytest.raises(ValueError):
         Residual_block(D, temporal_block_type="unknown")
+
+
+def test_griffin_model():
+    """Griffin: embedding -> N residual blocks (recurrent, recurrent, attention, ...) -> RMSNorm -> shared linear -> softmax."""
+    torch.manual_seed(0)
+    B, T, V, D, N = 2, 7, 50, 256, 4
+    model = Griffin(V, D, N)
+    assert [type(b.temporal_block).__name__ for b in model.blocks] == [
+        "Recurrent_block", "Recurrent_block", "Local_MQA_block", "Recurrent_block"]
+    tokens = torch.randint(0, V, (B, T))
+    logits = model(tokens)
+    assert logits.shape == (B, T, V)
+    # the output layer is the embedding matrix: the model holds one (V, D) parameter, not two
+    assert sum(p.numel() for p in model.parameters() if p.shape == (V, D)) == V * D
+    probs = model.probabilities(tokens)
+    torch.testing.assert_close(probs.sum(-1), torch.ones(B, T))
+
+    # causal: changing the tokens from position 4 on leaves the logits before 4 unchanged
+    tokens2 = tokens.clone()
+    tokens2[:, 4:] = (tokens2[:, 4:] + 1) % V
+    logits2 = model(tokens2)
+    torch.testing.assert_close(logits2[:, :4], logits[:, :4])
+    assert not torch.allclose(logits2[:, 4:], logits[:, 4:])
+
+    # one training step: next-token loss with finite gradients everywhere
+    loss = torch.nn.functional.cross_entropy(logits[:, :-1].reshape(-1, V), tokens[:, 1:].reshape(-1))
+    loss.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
