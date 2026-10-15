@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 from typing import Literal
+from .attention import Local_MQA_block
 from .rmsnorm import RMSNorm
 
 
@@ -230,16 +231,23 @@ class Recurrent_block(nn.Module):
 
 
 class Residual_block(nn.Module):
-    def __init__(self, D:int):
+    def __init__(self, D:int, temporal_block_type:Literal['recurrent', 'attention']='recurrent'):
         super().__init__()
-        self.tmb_norm = RMSNorm(D)
-        self.tmb = Recurrent_block(D, D_rnn=int(round(4 * D / 3)))
+        self.temporal_norm = RMSNorm(D)
+        # Paper, Section 2.3: the temporal-mixing block is the recurrent block or local MQA.
+        # Griffin stacks two residual blocks with 'recurrent', then one with 'attention' (Section 3).
+        if temporal_block_type == 'recurrent':
+            self.temporal_block = Recurrent_block(D, D_rnn=int(round(4 * D / 3)))
+        elif temporal_block_type == 'attention':
+            self.temporal_block = Local_MQA_block(D)  # D_head = 128 and window 1024, as in the paper
+        else:
+            raise ValueError(f"temporal_block_type must be 'recurrent' or 'attention', got {temporal_block_type!r}")
         self.mlp_norm = RMSNorm(D)
         self.mlp = Gated_MLP_block(D, expansion_factor=3)
 
     def forward(self, x:Tensor) -> Tensor:
-        x1 = self.tmb_norm(x)
-        x1 = self.tmb(x1)
+        x1 = self.temporal_norm(x)
+        x1 = self.temporal_block(x1)
 
         y1 = x + x1
 

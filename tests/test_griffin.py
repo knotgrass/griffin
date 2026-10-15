@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from griffin import (
@@ -34,12 +35,12 @@ def test_residual_block():
     torch.manual_seed(0)
     B, T, D = 2, 10, 6  # D_rnn = 8 != D, so a D / D_rnn mix-up fails
     blk = Residual_block(D)
-    rglru = blk.tmb.rglru
+    rglru = blk.temporal_block.rglru
 
     # C3: Lambda stays an nn.Parameter
     assert isinstance(rglru.Lambda, torch.nn.Parameter)
     # C4: Recurrent_block(D) without D_rnn gets the same width
-    assert Recurrent_block(D).D_rnn == blk.tmb.D_rnn == 8
+    assert Recurrent_block(D).D_rnn == blk.temporal_block.D_rnn == 8
     # S2: reset_parameters() sets the gate biases to 0, whatever was in memory
     with torch.no_grad():
         rglru.ba.fill_(1.0)
@@ -47,7 +48,7 @@ def test_residual_block():
     rglru.reset_parameters()
     assert (rglru.ba == 0).all() and (rglru.bx == 0).all()
     # S3: one RMSNorm per branch
-    assert blk.tmb_norm is not blk.mlp_norm
+    assert blk.temporal_norm is not blk.mlp_norm
 
     # C5-C8: forward runs and keeps the shape
     x = torch.randn(B, T, D, requires_grad=True)
@@ -160,3 +161,21 @@ def test_local_mqa():
     scores = apply_rope(qr, positions) @ apply_rope(kr, positions).T
     shifted = apply_rope(qr, positions + 100) @ apply_rope(kr, positions + 100).T
     torch.testing.assert_close(shifted, scores, rtol=1e-5, atol=1e-5)
+
+
+def test_residual_block_attention():
+    """Residual_block(temporal_block_type="attention") uses the local MQA block and stays causal."""
+    torch.manual_seed(0)
+    B, T, D = 2, 10, 256  # D must be a multiple of D_head = 128: H = 2 heads
+    blk = Residual_block(D, temporal_block_type="attention")
+    assert isinstance(blk.temporal_block, Local_MQA_block) and isinstance(Residual_block(6).temporal_block, Recurrent_block)
+    x = torch.randn(B, T, D, requires_grad=True)
+    y = blk(x)
+    assert y.shape == (B, T, D)
+    for t in range(T):
+        (grad,) = torch.autograd.grad(y[:, t].sum(), x, retain_graph=True)
+        assert grad[:, t + 1:].abs().sum() == 0, f"y[{t}] uses a future step"
+    y.sum().backward()
+    assert all(torch.isfinite(p.grad).all() for p in blk.parameters())
+    with pytest.raises(ValueError):
+        Residual_block(D, temporal_block_type="unknown")
