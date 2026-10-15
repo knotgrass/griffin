@@ -11,11 +11,12 @@ class Gated_MLP_block(nn.Module):
         self,
         D: int,
         expansion_factor: int = 3,
-        approximate: Literal["none", "tanh"] = "none",
+        approximate: Literal["none", "tanh"] = "tanh",  # the official code uses gelu(x, approximate="tanh")
     ) -> None:
         super().__init__()
         self.D = D
         self.M = expansion_factor
+        # https://github.com/google-deepmind/recurrentgemma/blob/2efa84dac0e68e63547a27a18fa943c98f1c312e/recurrentgemma/torch/modules.py#L289-L291
         self.gelu = nn.GELU(approximate)
         self.p1 = nn.Linear(in_features=D, out_features=D*self.M)
         self.p2 = nn.Linear(in_features=D, out_features=D*self.M)
@@ -200,11 +201,12 @@ class RGLRU(Real_Gated_Linear_Recurrent_Unit): ...
 
 class Recurrent_block(nn.Module):
     def __init__(self, D:int, D_rnn:int | None = None,
-                 approximate:Literal['none', 'tanh']='none'):
+                 approximate:Literal['none', 'tanh']='tanh'):  # the official code uses gelu(x, approximate="tanh")
         super().__init__()
         D_rnn = D_rnn or int(round(4 * D / 3))
         self.D = D
         self.D_rnn = D_rnn
+        # https://github.com/google-deepmind/recurrentgemma/blob/2efa84dac0e68e63547a27a18fa943c98f1c312e/recurrentgemma/torch/modules.py#L289-L291
         self.gelu = nn.GELU(approximate)
         self.p1 = nn.Linear(in_features=D, out_features=D_rnn)
         self.p2 = nn.Linear(in_features=D, out_features=D_rnn)
