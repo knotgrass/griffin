@@ -11,7 +11,7 @@ from jaxtyping import Float, Int
 from torch import Tensor, nn
 
 from .config import GriffinConfig
-from .griffin import Residual_block
+from .modules import Residual_block
 from .rmsnorm import RMSNorm
 
 

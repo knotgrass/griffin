@@ -1,15 +1,13 @@
 from .attention import Local_MQA_block, apply_rope
 from .config import TABLE_2, GriffinConfig
-from .griffin import (
+from .layers import (
     RGLRU,
-    Gated_MLP_block,
     Real_Gated_Linear_Recurrent_Unit,
-    Recurrent_block,
-    Residual_block,
     SqrtBoundDerivative,
     Temporal_Conv1D,
 )
 from .model import Griffin
+from .modules import Gated_MLP_block, Recurrent_block, Residual_block
 from .rmsnorm import RMSNorm
 
 __all__ = [
