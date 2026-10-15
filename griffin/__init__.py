@@ -1,3 +1,4 @@
+from .attention import Local_MQA_block, apply_rope
 from .griffin import (
     RGLRU,
     Gated_MLP_block,
@@ -12,10 +13,12 @@ from .rmsnorm import RMSNorm
 __all__ = [
     "RGLRU",
     "Gated_MLP_block",
+    "Local_MQA_block",
     "RMSNorm",
     "Real_Gated_Linear_Recurrent_Unit",
     "Recurrent_block",
     "Residual_block",
     "SqrtBoundDerivative",
     "Temporal_Conv1D",
+    "apply_rope",
 ]

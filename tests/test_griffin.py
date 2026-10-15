@@ -2,11 +2,13 @@ import torch
 
 from griffin import (
     RGLRU,
+    Local_MQA_block,
     Recurrent_block,
     Residual_block,
     RMSNorm,
     SqrtBoundDerivative,
     Temporal_Conv1D,
+    apply_rope,
 )
 
 
@@ -123,3 +125,38 @@ def test_rmsnorm():
     assert y16.dtype == torch.float16 and (y16 == 0).all()
     y16.float().sum().backward()
     assert torch.isfinite(x16.grad).all()
+
+
+def test_local_mqa():
+    """Local MQA: one shared K/V head, a causal window of window_size tokens back, and RoPE."""
+    torch.manual_seed(0)
+    B, T, D, D_head, W = 2, 12, 12, 4, 3  # H = 3 heads, each token sees itself and 3 tokens back
+    blk = Local_MQA_block(D, D_head=D_head, window_size=W)
+    assert blk.H == 3 and blk.Wk.weight.shape == blk.Wv.weight.shape == (D_head, D)  # MQA: one K and one V head
+    x = torch.randn(B, T, D, requires_grad=True)
+    y = blk(x)
+    assert y.shape == (B, T, D)
+
+    # window: y[t] uses x[s] only for t - W <= s <= t
+    for t in range(T):
+        (grad,) = torch.autograd.grad(y[:, t].sum(), x, retain_graph=True)
+        used = grad.abs().sum(dim=(0, 2)) > 0  # (T,)
+        expected = torch.zeros(T, dtype=torch.bool)
+        expected[max(0, t - W):t + 1] = True
+        assert torch.equal(used, expected), f"y[{t}] uses {used.nonzero().flatten().tolist()}"
+
+    # the attention core equals F.scaled_dot_product_attention with the same mask (K, V repeated over the heads)
+    positions = torch.arange(T)
+    q = apply_rope(blk.Wq(x).view(B, T, blk.H, D_head).transpose(1, 2), positions)
+    k = apply_rope(blk.Wk(x).unsqueeze(1), positions).expand(B, blk.H, T, D_head)
+    v = blk.Wv(x).unsqueeze(1).expand(B, blk.H, T, D_head)
+    mask = (positions[None, :] <= positions[:, None]) & (positions[None, :] >= positions[:, None] - W)
+    ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+    torch.testing.assert_close(y, blk.Wo(ref.transpose(1, 2).reshape(B, T, D)), rtol=1e-5, atol=1e-6)
+
+    # RoPE: keeps the norm, and q_m . k_n depends only on m - n
+    qr, kr = torch.randn(T, D_head), torch.randn(T, D_head)
+    torch.testing.assert_close(apply_rope(qr, positions).norm(dim=-1), qr.norm(dim=-1))
+    scores = apply_rope(qr, positions) @ apply_rope(kr, positions).T
+    shifted = apply_rope(qr, positions + 100) @ apply_rope(kr, positions + 100).T
+    torch.testing.assert_close(shifted, scores, rtol=1e-5, atol=1e-5)
