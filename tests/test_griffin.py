@@ -23,7 +23,7 @@ def test_causal():
     conv = Temporal_Conv1D(D, kernel_size=4)
     x = torch.randn(B, T, D, requires_grad=True)
 
-    y = conv(x)
+    y, _ = conv(x)
     assert y.shape == (B, T, D)
 
     for t in range(T):
@@ -256,3 +256,38 @@ def test_rglru_cache():
     y_b, h_b = m(x[:, 4:], h0=h_a)
     torch.testing.assert_close(torch.cat([y_a, y_b], dim=1), y_full)
     torch.testing.assert_close(h_b, h_full)
+
+
+def test_conv1d_cache():
+    """Conv1D cache: prefill returns the last 3 inputs, decode continues from them, and the result equals one forward call."""
+    torch.manual_seed(0)
+    B, T, Tp, D = 2, 9, 6, 8
+    conv = Temporal_Conv1D(D, kernel_size=4)
+    x = torch.randn(B, T, D)
+    y_full, state_full = conv(x)
+    # the cache is the last kernel_size - 1 = 3 inputs, in its own memory, not a view of the padded input
+    assert torch.equal(state_full, x[:, -3:])
+    assert state_full.untyped_storage().nbytes() == state_full.nbytes
+
+    # prefill on the prompt, then one decode call per token
+    y_pre, state = conv(x[:, :Tp])
+    assert y_pre.shape == (B, Tp, D)
+    assert state.shape == (B, 3, D)
+    ys = [y_pre]
+    for t in range(Tp, T):
+        y_t, state = conv(x[:, t:t + 1], state=state)
+        assert y_t.shape == (B, 1, D)
+        ys.append(y_t)
+    torch.testing.assert_close(torch.cat(ys, dim=1), y_full)
+    torch.testing.assert_close(state, state_full)
+
+    # a prompt in two chunks gives the same result as one prefill
+    y_a, state_a = conv(x[:, :4])
+    y_b, state_b = conv(x[:, 4:], state=state_a)
+    torch.testing.assert_close(torch.cat([y_a, y_b], dim=1), y_full)
+    torch.testing.assert_close(state_b, state_full)
+
+    # a prompt shorter than 3 tokens: the cache keeps zeros on the left
+    _, state_2 = conv(x[:, :2])
+    assert torch.equal(state_2[:, :1], torch.zeros(B, 1, D))
+    assert torch.equal(state_2[:, 1:], x[:, :2])
