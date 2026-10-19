@@ -60,7 +60,7 @@ class Recurrent_block(nn.Module):
         # right branch
         x2 = self.p2(x)
         x2 = self.separableConv1D(x2)
-        x2 = self.rglru(x2)
+        x2, _ = self.rglru(x2)  # the RG-LRU cache h_T is not used yet: Recurrent_block has no cache
 
         y = x1 * x2  # element-wise multiplication
         y = self.p3(y)

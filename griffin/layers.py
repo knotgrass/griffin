@@ -134,8 +134,12 @@ class Real_Gated_Linear_Recurrent_Unit(nn.Module):
             multiplier = torch.sqrt(one_minus_a2)  # derivative inf at 0, so NaN gradients in bfloat16
         return multiplier * (i * x)
 
-    def forward(self, x:Float32[Tensor, "batch_size sequence_length dim"]
-                ) -> Float32[Tensor, "batch_size sequence_length dim"]:
+    def forward(self, x:Float32[Tensor, "batch_size sequence_length dim"],
+                h0:Float32[Tensor, "batch_size dim"] | None = None,
+                ) -> tuple[Float32[Tensor, "batch_size sequence_length dim"], Float32[Tensor, "batch_size dim"]]:
+        # Cache for generation: h0 is h_T of the previous call.
+        # Prefill: h0 = None, the loop starts from h_0 = 0 and runs over the prompt.
+        # Decode: x holds one token, h0 is the cache, the loop runs once.
 
         # Paper, Section 2.4: "The layer has gates on both the input x and the
         # recurrent weight a. However, neither gate depends on the recurrent
@@ -153,7 +157,7 @@ class Real_Gated_Linear_Recurrent_Unit(nn.Module):
         a = torch.exp(log_a)
         b = self.input_term(log_a, a, i, x)  # sqrt(1 - a_t^2) * (i_t * x_t)
 
-        ht = x.new_zeros(x.shape[0], self.D)  # (batch_size, D)
+        ht = x.new_zeros(x.shape[0], self.D) if h0 is None else h0  # (batch_size, D)
         y = []
         for at, bt in zip(a.unbind(1), b.unbind(1)):  # at, bt: (batch_size, D)
             ht = at * ht + bt  # (4)
@@ -161,7 +165,9 @@ class Real_Gated_Linear_Recurrent_Unit(nn.Module):
 
         y = torch.stack(y, dim=1)  # (batch_size, sequence_length, D)
 
-        return y
+        # ht = h_T, the cache for the next call. It equals y[:, -1], but y[:, -1] is a view:
+        # a cache that holds it keeps the whole y in memory.
+        return y, ht
 
 
 class RGLRU(Real_Gated_Linear_Recurrent_Unit): ...

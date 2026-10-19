@@ -227,3 +227,32 @@ def test_griffin_config():
     assert (blk.temporal_block.D_rnn, blk.mlp.M) == (round(4 * 256 / 3), 3)
     blk = Residual_block(256, temporal_block_type="attention")
     assert (blk.temporal_block.D_head, blk.temporal_block.window_size) == (128, 1024)
+
+
+def test_rglru_cache():
+    """RG-LRU cache: prefill returns h_T, decode continues from it, and the result equals one forward call."""
+    torch.manual_seed(0)
+    B, T, Tp, D = 2, 9, 6, 8
+    m = RGLRU(D)
+    x = torch.randn(B, T, D)
+    y_full, h_full = m(x)
+    # y_t = h_t, but the cache is its own tensor, not a view of y
+    assert torch.equal(h_full, y_full[:, -1])
+    assert h_full.untyped_storage().data_ptr() != y_full.untyped_storage().data_ptr()
+
+    # prefill on the prompt, then one decode call per token
+    y_pre, h = m(x[:, :Tp])
+    assert y_pre.shape == (B, Tp, D) and h.shape == (B, D)
+    ys = [y_pre]
+    for t in range(Tp, T):
+        y_t, h = m(x[:, t:t + 1], h0=h)
+        assert y_t.shape == (B, 1, D)
+        ys.append(y_t)
+    torch.testing.assert_close(torch.cat(ys, dim=1), y_full)
+    torch.testing.assert_close(h, h_full)
+
+    # a prompt in two chunks gives the same result as one prefill
+    y_a, h_a = m(x[:, :4])
+    y_b, h_b = m(x[:, 4:], h0=h_a)
+    torch.testing.assert_close(torch.cat([y_a, y_b], dim=1), y_full)
+    torch.testing.assert_close(h_b, h_full)
