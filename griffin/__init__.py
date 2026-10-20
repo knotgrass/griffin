@@ -1,4 +1,4 @@
-from .attention import Local_MQA_block, apply_rope
+from .attention import KVCache, Local_MQA_block, apply_rope
 from .config import TABLE_2, GriffinConfig
 from .layers import (
     RGLRU,
@@ -16,6 +16,7 @@ __all__ = [
     "Gated_MLP_block",
     "Griffin",
     "GriffinConfig",
+    "KVCache",
     "Local_MQA_block",
     "RMSNorm",
     "Real_Gated_Linear_Recurrent_Unit",

@@ -52,7 +52,7 @@ class Recurrent_block(nn.Module):
         self.separableConv1D = Temporal_Conv1D(D_rnn, kernel_size=4)
         self.rglru = RGLRU(D_rnn)
 
-    def forward(self, x:Tensor) -> Tensor:
+    def forward(self, x:Tensor) -> tuple[Tensor, None]:
         # left branch
         x1 = self.p1(x)
         x1 = self.gelu(x1)
@@ -64,7 +64,7 @@ class Recurrent_block(nn.Module):
 
         y = x1 * x2  # element-wise multiplication
         y = self.p3(y)
-        return y
+        return y, None  # (output, cache), the same return as Local_MQA_block: no cache yet
 
 
 class Residual_block(nn.Module):
@@ -92,7 +92,7 @@ class Residual_block(nn.Module):
 
     def forward(self, x:Tensor) -> Tensor:
         x1 = self.temporal_norm(x)
-        x1 = self.temporal_block(x1)
+        x1, _ = self.temporal_block(x1)  # the cache is not used yet: Residual_block has no cache
 
         y1 = x + x1
 

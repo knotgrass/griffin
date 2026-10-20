@@ -138,7 +138,7 @@ def test_local_mqa():
     blk = Local_MQA_block(D, D_head=D_head, window_size=W)
     assert blk.H == 3 and blk.Wk.weight.shape == blk.Wv.weight.shape == (D_head, D)  # MQA: one K and one V head
     x = torch.randn(B, T, D, requires_grad=True)
-    y = blk(x)
+    y, _ = blk(x)
     assert y.shape == (B, T, D)
 
     # window: y[t] uses x[s] only for t - W <= s <= t
@@ -291,3 +291,43 @@ def test_conv1d_cache():
     _, state_2 = conv(x[:, :2])
     assert torch.equal(state_2[:, :1], torch.zeros(B, 1, D))
     assert torch.equal(state_2[:, 1:], x[:, :2])
+
+
+def test_local_mqa_cache():
+    """Local MQA cache: prefill keeps K, V of the last W tokens, decode continues from them, and the result equals one forward call."""
+    torch.manual_seed(0)
+    B, T, Tp, D, D_head, W = 2, 12, 6, 12, 4, 3
+    blk = Local_MQA_block(D, D_head=D_head, window_size=W)
+    x = torch.randn(B, T, D)
+    y_full, cache_full = blk(x)
+    # the cache: K, V of the last W tokens, in their own memory, and n = the number of tokens seen
+    assert cache_full.k.shape == (B, 1, W, D_head)
+    assert cache_full.v.shape == (B, 1, W, D_head)
+    assert cache_full.n == T
+    assert cache_full.k.untyped_storage().nbytes() == cache_full.k.nbytes
+    assert cache_full.v.untyped_storage().nbytes() == cache_full.v.nbytes
+
+    # prefill on the prompt, then one decode call per token: the cache stays at W tokens
+    y_pre, cache = blk(x[:, :Tp])
+    assert y_pre.shape == (B, Tp, D)
+    assert cache.n == Tp
+    ys = [y_pre]
+    for t in range(Tp, T):
+        y_t, cache = blk(x[:, t:t + 1], cache=cache)
+        assert y_t.shape == (B, 1, D)
+        assert cache.k.shape == (B, 1, W, D_head)
+        assert cache.n == t + 1
+        ys.append(y_t)
+    torch.testing.assert_close(torch.cat(ys, dim=1), y_full)
+    torch.testing.assert_close(cache.k, cache_full.k)
+    torch.testing.assert_close(cache.v, cache_full.v)
+
+    # a prompt in three chunks gives the same result as one prefill, also with a first chunk shorter than W
+    y_a, cache_a = blk(x[:, :2])
+    assert cache_a.k.shape == (B, 1, 2, D_head)
+    y_b, cache_b = blk(x[:, 2:7], cache=cache_a)
+    y_c, cache_c = blk(x[:, 7:], cache=cache_b)
+    torch.testing.assert_close(torch.cat([y_a, y_b, y_c], dim=1), y_full)
+    torch.testing.assert_close(cache_c.k, cache_full.k)
+    torch.testing.assert_close(cache_c.v, cache_full.v)
+    assert cache_c.n == T
