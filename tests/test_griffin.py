@@ -55,7 +55,7 @@ def test_residual_block():
 
     # C5-C8: forward runs and keeps the shape
     x = torch.randn(B, T, D, requires_grad=True)
-    y = blk(x)
+    y, _ = blk(x)
     assert y.shape == (B, T, D)
 
     # S1: y[t] never uses x[s] with s > t
@@ -69,14 +69,15 @@ def test_residual_block():
 
     # C9: h_0 follows the dtype and the device of x
     blk_bf16 = Residual_block(D).to(torch.bfloat16)
-    y_bf16 = blk_bf16(x.detach().to(torch.bfloat16))
+    y_bf16, _ = blk_bf16(x.detach().to(torch.bfloat16))
     assert y_bf16.dtype == torch.bfloat16
     # N1, N2: no inf or NaN gradients in bfloat16
     y_bf16.float().sum().backward()
     assert all(torch.isfinite(p.grad).all() for p in blk_bf16.parameters())
     # the meta device holds no data, so it checks the device without a GPU
     blk_meta = Residual_block(D).to("meta")
-    assert blk_meta(x.detach().to("meta")).device.type == "meta"
+    y_meta, _ = blk_meta(x.detach().to("meta"))
+    assert y_meta.device.type == "meta"
 
 
 def test_input_term():
@@ -173,7 +174,7 @@ def test_residual_block_attention():
     blk = Residual_block(D, temporal_block_type="attention")
     assert isinstance(blk.temporal_block, Local_MQA_block) and isinstance(Residual_block(6).temporal_block, Recurrent_block)
     x = torch.randn(B, T, D, requires_grad=True)
-    y = blk(x)
+    y, _ = blk(x)
     assert y.shape == (B, T, D)
     for t in range(T):
         (grad,) = torch.autograd.grad(y[:, t].sum(), x, retain_graph=True)
@@ -196,7 +197,7 @@ def test_griffin_model():
     mqa = model.blocks[2].temporal_block
     assert (mqa.H, mqa.D_head, mqa.window_size) == (2, 128, 3)
     tokens = torch.randint(0, V, (B, T))
-    logits = model(tokens)
+    logits, _ = model(tokens)
     assert logits.shape == (B, T, V)
     # the output layer is the embedding matrix: the model holds one (V, D) parameter, not two
     assert sum(p.numel() for p in model.parameters() if p.shape == (V, D)) == V * D
@@ -206,7 +207,7 @@ def test_griffin_model():
     # causal: changing the tokens from position 4 on leaves the logits before 4 unchanged
     tokens2 = tokens.clone()
     tokens2[:, 4:] = (tokens2[:, 4:] + 1) % V
-    logits2 = model(tokens2)
+    logits2, _ = model(tokens2)
     torch.testing.assert_close(logits2[:, :4], logits[:, :4])
     assert not torch.allclose(logits2[:, 4:], logits[:, 4:])
 
@@ -331,3 +332,37 @@ def test_local_mqa_cache():
     torch.testing.assert_close(cache_c.k, cache_full.k)
     torch.testing.assert_close(cache_c.v, cache_full.v)
     assert cache_c.n == T
+
+
+def test_griffin_cache():
+    """Griffin cache: prefill, then one token per call, gives the logits of one forward call over the whole sequence."""
+    torch.manual_seed(0)
+    B, T, Tp, V, D, W = 2, 9, 6, 50, 256, 3
+    model = Griffin(GriffinConfig(V=V, D=D, N=4, H=2, window_size=W))  # recurrent, recurrent, attention, recurrent
+    tokens = torch.randint(0, V, (B, T))
+    logits_full, cache_full = model(tokens)
+    # one cache per block: Conv1D inputs and RG-LRU state for a recurrent block, K, V and n for local MQA
+    assert [type(c).__name__ for c in cache_full] == ["RecurrentCache", "RecurrentCache", "KVCache", "RecurrentCache"]
+    D_rnn = model.blocks[0].temporal_block.D_rnn
+    assert cache_full[0].conv_state.shape == (B, 3, D_rnn)
+    assert cache_full[0].h.shape == (B, D_rnn)
+    assert cache_full[2].k.shape == (B, 1, W, 128)
+    assert cache_full[2].n == T
+
+    # prefill on the prompt, then one decode call per token
+    logits_pre, cache = model(tokens[:, :Tp])
+    assert logits_pre.shape == (B, Tp, V)
+    logits = [logits_pre]
+    for t in range(Tp, T):
+        logits_t, cache = model(tokens[:, t:t + 1], cache=cache)
+        assert logits_t.shape == (B, 1, V)
+        logits.append(logits_t)
+    torch.testing.assert_close(torch.cat(logits, dim=1), logits_full)
+    for c, c_full in zip(cache, cache_full):
+        for a, b in zip(c, c_full):
+            torch.testing.assert_close(a, b)
+
+    # a prompt in two chunks gives the same logits as one prefill
+    logits_a, cache_a = model(tokens[:, :4])
+    logits_b, _ = model(tokens[:, 4:], cache=cache_a)
+    torch.testing.assert_close(torch.cat([logits_a, logits_b], dim=1), logits_full)

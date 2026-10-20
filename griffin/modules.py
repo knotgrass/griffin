@@ -1,8 +1,9 @@
-from typing import Literal
+from typing import Literal, NamedTuple
 
+from jaxtyping import Float
 from torch import Tensor, nn
 
-from .attention import Local_MQA_block
+from .attention import KVCache, Local_MQA_block
 from .layers import RGLRU, Temporal_Conv1D
 from .rmsnorm import RMSNorm
 
@@ -37,6 +38,15 @@ class Gated_MLP_block(nn.Module):
         return y
 
 
+class RecurrentCache(NamedTuple):
+    """Cache of one recurrent block for generation.
+
+    conv_state: the last kernel_size - 1 = 3 inputs of the Conv1D. h: the state h_T of the RG-LRU.
+    """
+    conv_state: Float[Tensor, "B P D_rnn"]
+    h: Float[Tensor, "B D_rnn"]
+
+
 class Recurrent_block(nn.Module):
     def __init__(self, D:int, D_rnn:int | None = None,
                  approximate:Literal['none', 'tanh']='tanh'):  # the official code uses gelu(x, approximate="tanh")
@@ -52,19 +62,24 @@ class Recurrent_block(nn.Module):
         self.separableConv1D = Temporal_Conv1D(D_rnn, kernel_size=4)
         self.rglru = RGLRU(D_rnn)
 
-    def forward(self, x:Tensor) -> tuple[Tensor, None]:
+    def forward(self, x:Tensor, cache:RecurrentCache | None = None) -> tuple[Tensor, RecurrentCache]:
+        # Cache for generation: the Conv1D inputs and the RG-LRU state of the previous call. Prefill: cache = None.
+        conv_state = None if cache is None else cache.conv_state
+        h = None if cache is None else cache.h
+
         # left branch
         x1 = self.p1(x)
         x1 = self.gelu(x1)
 
         # right branch
         x2 = self.p2(x)
-        x2, _ = self.separableConv1D(x2)  # the Conv1D cache is not used yet: Recurrent_block has no cache
-        x2, _ = self.rglru(x2)  # the RG-LRU cache h_T is not used yet: Recurrent_block has no cache
+        x2, conv_state = self.separableConv1D(x2, state=conv_state)
+        x2, h = self.rglru(x2, h0=h)
 
         y = x1 * x2  # element-wise multiplication
         y = self.p3(y)
-        return y, None  # (output, cache), the same return as Local_MQA_block: no cache yet
+        new_cache = RecurrentCache(conv_state, h)
+        return y, new_cache
 
 
 class Residual_block(nn.Module):
@@ -90,9 +105,9 @@ class Residual_block(nn.Module):
         self.mlp_norm = RMSNorm(D)
         self.mlp = Gated_MLP_block(D, expansion_factor=M)
 
-    def forward(self, x:Tensor) -> Tensor:
+    def forward(self, x:Tensor, cache:RecurrentCache | KVCache | None = None) -> tuple[Tensor, RecurrentCache | KVCache]:
         x1 = self.temporal_norm(x)
-        x1, _ = self.temporal_block(x1)  # the cache is not used yet: Residual_block has no cache
+        x1, new_cache = self.temporal_block(x1, cache=cache)  # RecurrentCache or KVCache, as the block
 
         y1 = x + x1
 
@@ -101,4 +116,4 @@ class Residual_block(nn.Module):
 
         y2 = y1 + x2
 
-        return y2
+        return y2, new_cache

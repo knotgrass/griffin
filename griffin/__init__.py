@@ -7,7 +7,7 @@ from .layers import (
     Temporal_Conv1D,
 )
 from .model import Griffin
-from .modules import Gated_MLP_block, Recurrent_block, Residual_block
+from .modules import Gated_MLP_block, Recurrent_block, RecurrentCache, Residual_block
 from .rmsnorm import RMSNorm
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "Local_MQA_block",
     "RMSNorm",
     "Real_Gated_Linear_Recurrent_Unit",
+    "RecurrentCache",
     "Recurrent_block",
     "Residual_block",
     "SqrtBoundDerivative",

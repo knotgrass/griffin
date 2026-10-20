@@ -10,8 +10,9 @@ import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 
+from .attention import KVCache
 from .config import GriffinConfig
-from .modules import Residual_block
+from .modules import RecurrentCache, Residual_block
 from .rmsnorm import RMSNorm
 
 
@@ -41,18 +42,26 @@ class Griffin(nn.Module):
         ])
         self.final_norm = RMSNorm(cfg.D)
 
-    def forward(self, tokens: Int[Tensor, "B T"]) -> Float[Tensor, "B T V"]:
+    def forward(self, tokens: Int[Tensor, "B T"],
+                cache: list[RecurrentCache | KVCache] | None = None,
+                ) -> tuple[Float[Tensor, "B T V"], list[RecurrentCache | KVCache]]:
+        # Cache for generation: one cache per residual block, in the order of self.blocks.
+        # Prefill: cache = None. Decode: tokens holds the last sampled token, cache comes from the previous call.
         x: Float[Tensor, "B T D"] = self.embedding(tokens)
-        for block in self.blocks:
-            x = block(x)
+        new_cache: list[RecurrentCache | KVCache] = []
+        for i, block in enumerate(self.blocks):
+            block_cache = None if cache is None else cache[i]
+            x, block_cache = block(x, cache=block_cache)
+            new_cache.append(block_cache)
         x = self.final_norm(x)
         logits: Float[Tensor, "B T V"] = F.linear(x, self.embedding.weight)  # x @ E^T, the shared weights
-        return logits
+        return logits, new_cache
 
     def probabilities(self, tokens: Int[Tensor, "B T"]) -> Float[Tensor, "B T V"]:
         """The last step of the paper: softmax over the V tokens.
 
         Training uses F.cross_entropy on the logits of forward instead; it applies log-softmax itself.
         """
-        probs = torch.softmax(self(tokens), dim=-1)
+        logits, _ = self(tokens)
+        probs = torch.softmax(logits, dim=-1)
         return probs
