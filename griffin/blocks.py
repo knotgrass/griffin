@@ -4,7 +4,8 @@ from jaxtyping import Float
 from torch import Tensor, nn
 
 from .attention import KVCache, Local_MQA_block
-from .layers import RGLRU, Temporal_Conv1D
+from .causal_conv1d import Temporal_Conv1D
+from .rglru import RGLRU
 from .rmsnorm import RMSNorm
 
 

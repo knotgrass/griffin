@@ -11,8 +11,8 @@ from jaxtyping import Float, Int
 from torch import Tensor, nn
 
 from .attention import KVCache
+from .blocks import RecurrentCache, Residual_block
 from .config import GriffinConfig
-from .modules import RecurrentCache, Residual_block
 from .rmsnorm import RMSNorm
 
 
